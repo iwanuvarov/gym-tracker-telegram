@@ -1,0 +1,165 @@
+:root {
+  color-scheme: dark;
+  --bg: #090d12;
+  --card: #101722;
+  --line: #1b2838;
+  --text: #f3f5f8;
+  --muted: #a0adba;
+  --primary: #f05f3d;
+  --primary-dark: #c94f34;
+  --danger: #ba3641;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at 20% -10%, #1d293b 0%, #090d12 60%);
+  color: var(--text);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+.app-shell {
+  width: min(760px, 100%);
+  margin: 0 auto;
+  padding: 20px 14px 28px;
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  background: linear-gradient(160deg, #0f1622, #0c121a);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.eyebrow {
+  color: var(--primary);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.field-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.input {
+  width: 100%;
+  background: #0b1119;
+  border: 1px solid #22344b;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 15px;
+}
+
+.input:focus {
+  border-color: #2e4f75;
+  outline: none;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+.row-between {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: white;
+  background: var(--primary);
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--primary-dark);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button.ghost {
+  background: #1a2636;
+}
+
+.button.ghost:hover {
+  background: #24344c;
+}
+
+.button.danger {
+  background: var(--danger);
+}
+
+.button.danger:hover {
+  background: #992e39;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #0b1118;
+}
+
+.item-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.notice {
+  border-radius: 10px;
+  padding: 10px;
+  border: 1px solid;
+}
+
+.notice.success {
+  color: #8de2ad;
+  border-color: #296742;
+  background: #102218;
+}
+
+.notice.error {
+  color: #f4a5ac;
+  border-color: #81343d;
+  background: #2a1216;
+}

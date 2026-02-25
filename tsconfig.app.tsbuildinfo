@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/lib/env.ts","./src/lib/supabase.ts","./src/lib/telegram.ts","./src/store/useminiappstore.ts","./src/types/telegram-webapp.d.ts"],"version":"5.9.3"}
