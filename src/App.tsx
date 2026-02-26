@@ -4,11 +4,20 @@ import { useMiniAppStore } from './store/useMiniAppStore';
 
 const todayIso = (): string => new Date().toISOString().slice(0, 10);
 
-type MainSection = 'workouts' | 'templates';
+type MainSection = 'workouts' | 'templates' | 'analytics';
 
 const runSafely = (promise: Promise<unknown>): void => {
   void promise.catch(() => undefined);
 };
+
+const formatNumber = (value: number): string => {
+  if (!Number.isFinite(value)) {
+    return '0';
+  }
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value);
+};
+
+const weekLabel = (isoDate: string): string => isoDate.slice(5);
 
 export default function App() {
   const {
@@ -16,13 +25,16 @@ export default function App() {
     sessionUserId,
     workspaceId,
     workspaces,
+    workspaceMembers,
     workspaceSelectionRequired,
     workouts,
+    workoutSummariesById,
     exercisesByWorkout,
     setsByExercise,
     exerciseSummaryById,
     templates,
     templateExercisesByTemplateId,
+    analytics,
     loading,
     authLoading,
     email,
@@ -37,6 +49,10 @@ export default function App() {
     signOut,
     refreshWorkspaces,
     selectWorkspace,
+    loadWorkspaceMembers,
+    inviteCoachByEmail,
+    removeWorkspaceMember,
+    loadAnalytics,
     loadWorkouts,
     createWorkout,
     renameWorkout,
@@ -78,6 +94,8 @@ export default function App() {
   const [newTemplateExerciseName, setNewTemplateExerciseName] = useState('');
   const [templateWorkoutDate, setTemplateWorkoutDate] = useState(todayIso);
   const [templateWorkoutTitle, setTemplateWorkoutTitle] = useState('');
+  const [inviteCoachEmail, setInviteCoachEmail] = useState('');
+  const [analyticsDays, setAnalyticsDays] = useState('56');
 
   useEffect(() => {
     runSafely(init());
@@ -88,6 +106,15 @@ export default function App() {
     setActiveExerciseId(null);
     setActiveTemplateId(null);
   }, [workspaceId]);
+
+  useEffect(() => {
+    if (section !== 'analytics' || !workspaceId) {
+      return;
+    }
+
+    const days = Number(analyticsDays);
+    runSafely(loadAnalytics(Number.isFinite(days) ? days : 56));
+  }, [section, workspaceId, analyticsDays, loadAnalytics]);
 
   const telegramLabel = useMemo(() => {
     if (!telegramUser) {
@@ -155,6 +182,17 @@ export default function App() {
   );
 
   const canManageData = Boolean(sessionUserId && workspaceId);
+  const currentUserRole = useMemo(
+    () => workspaceMembers.find((member) => member.user_id === sessionUserId)?.role ?? null,
+    [sessionUserId, workspaceMembers],
+  );
+  const canInviteCoach = canManageData && currentUserRole === 'owner';
+  const maxWeeklyVolume = useMemo(() => {
+    if (!analytics || analytics.weekly.length === 0) {
+      return 1;
+    }
+    return Math.max(...analytics.weekly.map((point) => point.volume), 1);
+  }, [analytics]);
 
   const openWorkout = (workoutId: string): void => {
     setSection('workouts');
@@ -274,6 +312,77 @@ export default function App() {
         </p>
       </section>
 
+      <section className="card">
+        <div className="row row-between">
+          <h2>Доступ тренера</h2>
+          <button
+            className="button ghost"
+            onClick={() => runSafely(loadWorkspaceMembers())}
+            disabled={loading || !canManageData}
+          >
+            Обновить участников
+          </button>
+        </div>
+
+        <p className="muted">Ваша роль: {currentUserRole ?? 'не определена'}</p>
+
+        <label className="field-label" htmlFor="coach-email-input">
+          Email тренера
+        </label>
+        <input
+          id="coach-email-input"
+          className="input"
+          value={inviteCoachEmail}
+          onChange={(event) => setInviteCoachEmail(event.target.value)}
+          placeholder="coach@example.com"
+          autoCapitalize="none"
+          autoCorrect="off"
+          disabled={!canInviteCoach}
+        />
+
+        <button
+          className="button"
+          disabled={loading || !canInviteCoach || !inviteCoachEmail.trim()}
+          onClick={() =>
+            runSafely(
+              inviteCoachByEmail(inviteCoachEmail).then(() => {
+                setInviteCoachEmail('');
+              }),
+            )
+          }
+        >
+          Пригласить тренера
+        </button>
+
+        {!canInviteCoach ? (
+          <p className="muted">Приглашать тренера может только владелец пространства.</p>
+        ) : null}
+
+        <ul className="list">
+          {workspaceMembers.map((member) => (
+            <li key={member.user_id} className="list-item">
+              <div className="list-item-main">
+                <p className="item-title">{member.email || member.user_id}</p>
+                <p className="item-subtitle">Роль: {member.role}</p>
+              </div>
+              {canInviteCoach && member.role === 'coach' ? (
+                <button
+                  className="button danger"
+                  onClick={() => runSafely(removeWorkspaceMember(member.user_id))}
+                  disabled={loading}
+                >
+                  Убрать тренера
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+
+        {workspaceMembers.length === 0 ? (
+          <p className="muted">Участники пока не загружены или отсутствуют.</p>
+        ) : null}
+      </section>
+
       {canManageData ? (
         <section className="card">
           <div className="section-nav">
@@ -296,6 +405,19 @@ export default function App() {
               }}
             >
               Шаблоны
+            </button>
+            <button
+              className={`nav-button ${section === 'analytics' ? 'active' : ''}`}
+              onClick={() => {
+                setSection('analytics');
+                setActiveWorkoutId(null);
+                setActiveExerciseId(null);
+                setActiveTemplateId(null);
+                const days = Number(analyticsDays);
+                runSafely(loadAnalytics(Number.isFinite(days) ? days : 56));
+              }}
+            >
+              Аналитика
             </button>
           </div>
         </section>
@@ -603,6 +725,7 @@ export default function App() {
                     <div className="list-item-main">
                       <p className="item-title">{workout.title}</p>
                       <p className="item-subtitle">{workout.workout_date}</p>
+                      <p className="muted">{workoutSummariesById[workout.id] ?? 'Нет упражнений.'}</p>
                     </div>
                     <div className="row wrap">
                       <button className="button ghost" onClick={() => openWorkout(workout.id)}>
@@ -622,7 +745,8 @@ export default function App() {
             </section>
           </>
         )
-      ) : activeTemplate ? (
+      ) : section === 'templates' ? (
+        activeTemplate ? (
         <section className="card">
           <div className="stack-header">
             <button
@@ -836,6 +960,122 @@ export default function App() {
             </ul>
           </section>
         </>
+        )
+      ) : (
+        <section className="card">
+          <div className="row row-between">
+            <h2>Аналитика</h2>
+            <button
+              className="button ghost"
+              onClick={() => {
+                const days = Number(analyticsDays);
+                runSafely(loadAnalytics(Number.isFinite(days) ? days : 56));
+              }}
+              disabled={loading || !canManageData}
+            >
+              Обновить
+            </button>
+          </div>
+
+          <label className="field-label" htmlFor="analytics-days-select">
+            Период (дни)
+          </label>
+          <select
+            id="analytics-days-select"
+            className="input"
+            value={analyticsDays}
+            onChange={(event) => setAnalyticsDays(event.target.value)}
+            disabled={loading}
+          >
+            <option value="28">28</option>
+            <option value="56">56</option>
+            <option value="84">84</option>
+          </select>
+
+          {!analytics ? (
+            <p className="muted">Нажмите «Обновить», чтобы построить аналитику по текущему пространству.</p>
+          ) : (
+            <>
+              <div className="analytics-kpi-grid">
+                <div className="analytics-kpi-card">
+                  <p className="muted">Тренировок</p>
+                  <p className="kpi-value">{formatNumber(analytics.totalWorkouts)}</p>
+                </div>
+                <div className="analytics-kpi-card">
+                  <p className="muted">Подходов</p>
+                  <p className="kpi-value">{formatNumber(analytics.totalSets)}</p>
+                </div>
+                <div className="analytics-kpi-card">
+                  <p className="muted">Тоннаж</p>
+                  <p className="kpi-value">{formatNumber(analytics.totalVolume)}</p>
+                </div>
+              </div>
+
+              <h3>Нагрузка по неделям</h3>
+              <div className="analytics-weekly-list">
+                {analytics.weekly.map((point) => {
+                  const widthPercent = Math.max(4, (point.volume / maxWeeklyVolume) * 100);
+                  return (
+                    <div key={point.weekStart} className="analytics-week-row">
+                      <div className="analytics-week-label">{weekLabel(point.weekStart)}</div>
+                      <div className="analytics-week-bar-wrap">
+                        <div className="analytics-week-bar" style={{ width: `${widthPercent}%` }} />
+                      </div>
+                      <div className="analytics-week-meta">
+                        {formatNumber(point.volume)} кг • {point.workouts} тр.
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <h3>Топ упражнений</h3>
+              {analytics.topExercises.length === 0 ? (
+                <p className="muted">Нет данных по подходам за выбранный период.</p>
+              ) : (
+                <ul className="list">
+                  {analytics.topExercises.map((item) => (
+                    <li key={item.exerciseId} className="list-item">
+                      <div className="list-item-main">
+                        <p className="item-title">{item.exerciseName}</p>
+                        <p className="item-subtitle">
+                          Подходов: {item.setCount} • Тоннаж: {formatNumber(item.volume)}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <h3>Прогресс по максимальному весу</h3>
+              {analytics.progress.length === 0 ? (
+                <p className="muted">Недостаточно данных для расчета прогресса.</p>
+              ) : (
+                <ul className="list">
+                  {analytics.progress.map((item) => (
+                    <li key={item.exerciseId} className="list-item">
+                      <div className="list-item-main">
+                        <p className="item-title">{item.exerciseName}</p>
+                        <p className="item-subtitle">
+                          Текущий макс. вес: {formatNumber(item.currentMaxWeight)}
+                          {item.previousMaxWeight
+                            ? ` • Было: ${formatNumber(item.previousMaxWeight)}`
+                            : ' • Нет базы для сравнения'}
+                        </p>
+                        <p className="muted">
+                          Δ{' '}
+                          {item.deltaPercent === null
+                            ? '—'
+                            : `${item.deltaPercent > 0 ? '+' : ''}${formatNumber(item.deltaPercent)}%`}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </section>
       )}
 
       {message ? <p className="notice success">{message}</p> : null}

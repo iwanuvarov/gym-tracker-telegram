@@ -19,6 +19,15 @@ type Workspace = {
   created_at: string;
 };
 
+type WorkspaceRole = 'owner' | 'coach' | 'member';
+
+type WorkspaceMember = {
+  user_id: string;
+  email: string;
+  role: WorkspaceRole;
+  created_at: string;
+};
+
 type Exercise = {
   id: string;
   workspace_id: string;
@@ -63,20 +72,54 @@ type WorkoutTemplateExercise = {
   created_by: string;
 };
 
+type WeeklyAnalyticsPoint = {
+  weekStart: string;
+  volume: number;
+  workouts: number;
+};
+
+type ExerciseAnalyticsPoint = {
+  exerciseId: string;
+  exerciseName: string;
+  setCount: number;
+  volume: number;
+};
+
+type ExerciseProgressPoint = {
+  exerciseId: string;
+  exerciseName: string;
+  currentMaxWeight: number;
+  previousMaxWeight: number | null;
+  deltaPercent: number | null;
+};
+
+type WorkspaceAnalytics = {
+  periodDays: number;
+  totalWorkouts: number;
+  totalSets: number;
+  totalVolume: number;
+  weekly: WeeklyAnalyticsPoint[];
+  topExercises: ExerciseAnalyticsPoint[];
+  progress: ExerciseProgressPoint[];
+};
+
 type StoreState = {
   telegramUser: TelegramUser | null;
   sessionUserId: string | null;
   workspaceId: string;
   workspaces: Workspace[];
+  workspaceMembers: WorkspaceMember[];
   workspaceSelectionRequired: boolean;
 
   workouts: Workout[];
+  workoutSummariesById: Record<string, string>;
   exercisesByWorkout: Record<string, Exercise[]>;
   setsByExercise: Record<string, WorkoutSet[]>;
   exerciseSummaryById: Record<string, string>;
 
   templates: WorkoutTemplate[];
   templateExercisesByTemplateId: Record<string, WorkoutTemplateExercise[]>;
+  analytics: WorkspaceAnalytics | null;
 
   loading: boolean;
   authLoading: boolean;
@@ -94,6 +137,10 @@ type StoreState = {
 
   refreshWorkspaces: () => Promise<void>;
   selectWorkspace: (id: string) => Promise<void>;
+  loadWorkspaceMembers: () => Promise<void>;
+  inviteCoachByEmail: (email: string) => Promise<void>;
+  removeWorkspaceMember: (userId: string) => Promise<void>;
+  loadAnalytics: (periodDays?: number) => Promise<void>;
 
   loadWorkouts: () => Promise<void>;
   createWorkout: (title: string, workoutDate: string) => Promise<Workout>;
@@ -139,6 +186,22 @@ type WorkspaceResolution = {
 type RawWorkoutSet = Omit<WorkoutSet, 'reps' | 'weight'> & {
   reps: number | string;
   weight: number | string;
+};
+
+type ExerciseSummaryRow = {
+  id: string;
+  workout_id: string;
+  name: string;
+  sort_order: number;
+  created_at: string;
+};
+
+type SetSummaryRow = {
+  workout_id: string;
+  exercise_id: string;
+  reps: number | string;
+  weight: number | string;
+  created_at: string;
 };
 
 const WORKOUT_SELECT_COLUMNS =
@@ -216,6 +279,14 @@ const sortExercises = (exercises: Exercise[]): Exercise[] =>
     return a.sort_order - b.sort_order;
   });
 
+const sortExerciseSummaries = (exercises: ExerciseSummaryRow[]): ExerciseSummaryRow[] =>
+  [...exercises].sort((a, b) => {
+    if (a.sort_order === b.sort_order) {
+      return a.created_at.localeCompare(b.created_at);
+    }
+    return a.sort_order - b.sort_order;
+  });
+
 const sortWorkoutSets = (sets: WorkoutSet[]): WorkoutSet[] =>
   [...sets].sort((a, b) => a.created_at.localeCompare(b.created_at));
 
@@ -232,11 +303,42 @@ const sortTemplateExercises = (
     return a.sort_order - b.sort_order;
   });
 
+const sortWorkspaceMembers = (workspaceMembers: WorkspaceMember[]): WorkspaceMember[] => {
+  const roleRank: Record<WorkspaceRole, number> = {
+    owner: 0,
+    coach: 1,
+    member: 2,
+  };
+
+  return [...workspaceMembers].sort((a, b) => {
+    const roleDiff = roleRank[a.role] - roleRank[b.role];
+    if (roleDiff !== 0) {
+      return roleDiff;
+    }
+
+    const emailA = a.email.toLowerCase();
+    const emailB = b.email.toLowerCase();
+    if (emailA !== emailB) {
+      return emailA.localeCompare(emailB);
+    }
+
+    return a.user_id.localeCompare(b.user_id);
+  });
+};
+
 const formatWeight = (weight: number): string => {
   if (Number.isInteger(weight)) {
     return String(weight);
   }
-  return String(weight);
+  return weight.toFixed(2).replace(/\.?0+$/, '');
+};
+
+const normalizeExerciseName = (name: string): string =>
+  name.trim().replace(/\s+/g, ' ').toLowerCase();
+
+const prettifyExerciseName = (name: string): string => {
+  const value = name.trim().replace(/\s+/g, ' ');
+  return value.length > 0 ? value : 'Без названия';
 };
 
 const buildExerciseSummary = (sets: WorkoutSet[]): string => {
@@ -245,6 +347,52 @@ const buildExerciseSummary = (sets: WorkoutSet[]): string => {
   }
 
   return sets.map((setRow) => `${formatWeight(setRow.weight)}x${setRow.reps}`).join(', ');
+};
+
+const buildWorkoutSummary = (
+  workoutExercises: Array<{ id: string; name: string }>,
+  summaryByExerciseId: Record<string, string>,
+): string => {
+  if (workoutExercises.length === 0) {
+    return 'Нет упражнений.';
+  }
+
+  const exerciseSummaries = workoutExercises
+    .map((exercise) => {
+      const summary = summaryByExerciseId[exercise.id];
+      if (!summary || summary === 'Нет подходов') {
+        return null;
+      }
+      return `${exercise.name}: ${summary}`;
+    })
+    .filter((value): value is string => Boolean(value));
+
+  if (exerciseSummaries.length === 0) {
+    return 'Подходы не заполнены.';
+  }
+
+  return exerciseSummaries.join(' • ');
+};
+
+const getWeekStartIso = (isoDate: string): string => {
+  const date = new Date(`${isoDate}T00:00:00.000Z`);
+  const day = date.getUTCDay();
+  const diffToMonday = (day + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - diffToMonday);
+  return date.toISOString().slice(0, 10);
+};
+
+const generateWeekRange = (fromIso: string, toIso: string): string[] => {
+  const result: string[] = [];
+  const cursor = new Date(`${getWeekStartIso(fromIso)}T00:00:00.000Z`);
+  const last = new Date(`${getWeekStartIso(toIso)}T00:00:00.000Z`);
+
+  while (cursor <= last) {
+    result.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 7);
+  }
+
+  return result;
 };
 
 const extractErrorText = (error: unknown): { message: string; details: string; code: string } => {
@@ -299,6 +447,18 @@ const fetchWorkspaces = async (): Promise<Workspace[]> => {
   return (data ?? []) as Workspace[];
 };
 
+const fetchWorkspaceMembers = async (workspaceId: string): Promise<WorkspaceMember[]> => {
+  const { data, error } = await supabase.rpc('list_workspace_members', {
+    wid: workspaceId,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return sortWorkspaceMembers((data ?? []) as WorkspaceMember[]);
+};
+
 const fetchWorkouts = async (workspaceId: string): Promise<Workout[]> => {
   const { data, error } = await supabase
     .from('workouts')
@@ -312,6 +472,321 @@ const fetchWorkouts = async (workspaceId: string): Promise<Workout[]> => {
   }
 
   return sortWorkouts((data ?? []) as Workout[]);
+};
+
+const fetchWorkoutSummaries = async (
+  workspaceId: string,
+  workoutIds: string[],
+): Promise<Record<string, string>> => {
+  if (workoutIds.length === 0) {
+    return {};
+  }
+
+  const [exercisesResult, setsResult] = await Promise.all([
+    supabase
+      .from('exercises')
+      .select('id,workout_id,name,sort_order,created_at')
+      .eq('workspace_id', workspaceId)
+      .in('workout_id', workoutIds)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true }),
+    supabase
+      .from('sets')
+      .select('workout_id,exercise_id,reps,weight,created_at')
+      .eq('workspace_id', workspaceId)
+      .in('workout_id', workoutIds)
+      .order('created_at', { ascending: true }),
+  ]);
+
+  if (exercisesResult.error) {
+    throw exercisesResult.error;
+  }
+
+  if (setsResult.error) {
+    throw setsResult.error;
+  }
+
+  const exercises = sortExerciseSummaries((exercisesResult.data ?? []) as ExerciseSummaryRow[]);
+  const sets = (setsResult.data ?? []) as SetSummaryRow[];
+
+  const setsByExerciseId = new Map<string, WorkoutSet[]>();
+  sets.forEach((setRow) => {
+    const current = setsByExerciseId.get(setRow.exercise_id) ?? [];
+    current.push({
+      id: '',
+      workspace_id: workspaceId,
+      workout_id: setRow.workout_id,
+      exercise_id: setRow.exercise_id,
+      reps: toNumber(setRow.reps),
+      weight: toNumber(setRow.weight),
+      note: null,
+      created_at: setRow.created_at,
+      updated_at: setRow.created_at,
+      created_by: '',
+    });
+    setsByExerciseId.set(setRow.exercise_id, current);
+  });
+
+  const summaryByExerciseId: Record<string, string> = {};
+  setsByExerciseId.forEach((exerciseSets, exerciseId) => {
+    summaryByExerciseId[exerciseId] = buildExerciseSummary(sortWorkoutSets(exerciseSets));
+  });
+
+  const exercisesByWorkout = new Map<string, ExerciseSummaryRow[]>();
+  exercises.forEach((exercise) => {
+    const current = exercisesByWorkout.get(exercise.workout_id) ?? [];
+    current.push(exercise);
+    exercisesByWorkout.set(exercise.workout_id, current);
+  });
+
+  const workoutSummariesById: Record<string, string> = {};
+  workoutIds.forEach((workoutId) => {
+    const workoutExercises = exercisesByWorkout.get(workoutId) ?? [];
+    workoutSummariesById[workoutId] = buildWorkoutSummary(workoutExercises, summaryByExerciseId);
+  });
+
+  return workoutSummariesById;
+};
+
+const fetchWorkspaceAnalytics = async (
+  workspaceId: string,
+  periodDays: number,
+): Promise<WorkspaceAnalytics> => {
+  const safePeriodDays = Math.max(7, periodDays);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const fromDate = new Date(`${todayIso}T00:00:00.000Z`);
+  fromDate.setUTCDate(fromDate.getUTCDate() - (safePeriodDays - 1));
+  const fromIso = fromDate.toISOString().slice(0, 10);
+
+  const { data: workoutsData, error: workoutsError } = await supabase
+    .from('workouts')
+    .select('id,workout_date')
+    .eq('workspace_id', workspaceId)
+    .gte('workout_date', fromIso)
+    .order('workout_date', { ascending: true })
+    .order('created_at', { ascending: true });
+
+  if (workoutsError) {
+    throw workoutsError;
+  }
+
+  const workouts = (workoutsData ?? []) as Array<{ id: string; workout_date: string }>;
+  const workoutIds = workouts.map((workout) => workout.id);
+
+  if (workoutIds.length === 0) {
+    const emptyWeeks = generateWeekRange(fromIso, todayIso).map((weekStart) => ({
+      weekStart,
+      volume: 0,
+      workouts: 0,
+    }));
+
+    return {
+      periodDays: safePeriodDays,
+      totalWorkouts: 0,
+      totalSets: 0,
+      totalVolume: 0,
+      weekly: emptyWeeks,
+      topExercises: [],
+      progress: [],
+    };
+  }
+
+  const [exercisesResult, setsResult] = await Promise.all([
+    supabase
+      .from('exercises')
+      .select('id,name,workout_id')
+      .eq('workspace_id', workspaceId)
+      .in('workout_id', workoutIds),
+    supabase
+      .from('sets')
+      .select('exercise_id,workout_id,reps,weight,created_at')
+      .eq('workspace_id', workspaceId)
+      .in('workout_id', workoutIds)
+      .order('created_at', { ascending: true }),
+  ]);
+
+  if (exercisesResult.error) {
+    throw exercisesResult.error;
+  }
+
+  if (setsResult.error) {
+    throw setsResult.error;
+  }
+
+  const exercises = (exercisesResult.data ?? []) as Array<{
+    id: string;
+    name: string;
+    workout_id: string;
+  }>;
+
+  const sets = (setsResult.data ?? []) as SetSummaryRow[];
+
+  const workoutDateById = new Map<string, string>();
+  workouts.forEach((workout) => {
+    workoutDateById.set(workout.id, workout.workout_date);
+  });
+
+  const exerciseNameById = new Map<string, string>();
+  exercises.forEach((exercise) => {
+    exerciseNameById.set(exercise.id, exercise.name);
+  });
+
+  const weeklyMap = new Map<string, WeeklyAnalyticsPoint>();
+  generateWeekRange(fromIso, todayIso).forEach((weekStart) => {
+    weeklyMap.set(weekStart, { weekStart, volume: 0, workouts: 0 });
+  });
+
+  workouts.forEach((workout) => {
+    const weekStart = getWeekStartIso(workout.workout_date);
+    const point = weeklyMap.get(weekStart);
+    if (point) {
+      point.workouts += 1;
+    }
+  });
+
+  const exerciseStats = new Map<string, ExerciseAnalyticsPoint>();
+  const exerciseWorkoutMaxMap = new Map<
+    string,
+    {
+      exerciseNameKey: string;
+      exerciseName: string;
+      workoutId: string;
+      workoutDate: string;
+      maxWeight: number;
+    }
+  >();
+
+  let totalVolume = 0;
+  let totalSets = 0;
+
+  sets.forEach((setRow) => {
+    const workoutDate = workoutDateById.get(setRow.workout_id);
+    if (!workoutDate) {
+      return;
+    }
+
+    const reps = Math.max(0, toNumber(setRow.reps));
+    const weight = Math.max(0, toNumber(setRow.weight));
+    const volume = reps * weight;
+    const weekStart = getWeekStartIso(workoutDate);
+
+    const weekPoint = weeklyMap.get(weekStart);
+    if (weekPoint) {
+      weekPoint.volume += volume;
+    }
+
+    totalVolume += volume;
+    totalSets += 1;
+
+    const exerciseName = prettifyExerciseName(exerciseNameById.get(setRow.exercise_id) ?? 'Без названия');
+    const currentExerciseStat = exerciseStats.get(setRow.exercise_id) ?? {
+      exerciseId: setRow.exercise_id,
+      exerciseName,
+      setCount: 0,
+      volume: 0,
+    };
+    currentExerciseStat.setCount += 1;
+    currentExerciseStat.volume += volume;
+    exerciseStats.set(setRow.exercise_id, currentExerciseStat);
+
+    const progressKey = normalizeExerciseName(exerciseName);
+    const exerciseWorkoutKey = `${progressKey}::${setRow.workout_id}`;
+    const currentExerciseWorkout = exerciseWorkoutMaxMap.get(exerciseWorkoutKey) ?? {
+      exerciseNameKey: progressKey,
+      exerciseName,
+      workoutId: setRow.workout_id,
+      workoutDate,
+      maxWeight: 0,
+    };
+
+    if (currentExerciseWorkout.exerciseName === 'Без названия' && exerciseName !== 'Без названия') {
+      currentExerciseWorkout.exerciseName = exerciseName;
+    }
+
+    currentExerciseWorkout.maxWeight = Math.max(currentExerciseWorkout.maxWeight, weight);
+    exerciseWorkoutMaxMap.set(exerciseWorkoutKey, currentExerciseWorkout);
+  });
+
+  const topExercises = [...exerciseStats.values()]
+    .sort((a, b) => {
+      if (b.volume !== a.volume) {
+        return b.volume - a.volume;
+      }
+      return b.setCount - a.setCount;
+    })
+    .slice(0, 6);
+
+  const exerciseWorkoutsByName = new Map<
+    string,
+    Array<{
+      exerciseName: string;
+      workoutId: string;
+      workoutDate: string;
+      maxWeight: number;
+    }>
+  >();
+  exerciseWorkoutMaxMap.forEach((entry) => {
+    const current = exerciseWorkoutsByName.get(entry.exerciseNameKey) ?? [];
+    current.push({
+      exerciseName: entry.exerciseName,
+      workoutId: entry.workoutId,
+      workoutDate: entry.workoutDate,
+      maxWeight: entry.maxWeight,
+    });
+    exerciseWorkoutsByName.set(entry.exerciseNameKey, current);
+  });
+
+  const progress = [...exerciseWorkoutsByName.entries()]
+    .map(([exerciseNameKey, entries]) => {
+      const sortedEntries = [...entries].sort((a, b) => {
+        const dateCompare = a.workoutDate.localeCompare(b.workoutDate);
+        if (dateCompare !== 0) {
+          return dateCompare;
+        }
+        return a.workoutId.localeCompare(b.workoutId);
+      });
+
+      if (sortedEntries.length === 0) {
+        return null;
+      }
+
+      const firstEntry = sortedEntries.at(0);
+      const lastEntry = sortedEntries.at(-1);
+      if (!firstEntry || !lastEntry) {
+        return null;
+      }
+      const currentMaxWeight = lastEntry.maxWeight;
+      const hasComparisonBase =
+        sortedEntries.length > 1 || firstEntry.workoutId !== lastEntry.workoutId;
+      const previousMaxWeight = hasComparisonBase ? firstEntry.maxWeight : null;
+      const deltaPercent =
+        previousMaxWeight && previousMaxWeight > 0
+          ? ((currentMaxWeight - previousMaxWeight) / previousMaxWeight) * 100
+          : null;
+
+      return {
+        exerciseId: exerciseNameKey,
+        exerciseName: lastEntry.exerciseName,
+        currentMaxWeight,
+        previousMaxWeight,
+        deltaPercent,
+      } as ExerciseProgressPoint;
+    })
+    .filter((value): value is ExerciseProgressPoint => value !== null)
+    .sort((a, b) => b.currentMaxWeight - a.currentMaxWeight)
+    .slice(0, 8);
+
+  const weekly = [...weeklyMap.values()].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+
+  return {
+    periodDays: safePeriodDays,
+    totalWorkouts: workouts.length,
+    totalSets,
+    totalVolume,
+    weekly,
+    topExercises,
+    progress,
+  };
 };
 
 const fetchTemplates = async (workspaceId: string): Promise<WorkoutTemplate[]> => {
@@ -473,16 +948,33 @@ const ensureWorkspace = async (savedWorkspaceId: string): Promise<WorkspaceResol
 
 const loadWorkspaceScopedData = async (
   activeWorkspaceId: string,
-): Promise<{ workouts: Workout[]; templates: WorkoutTemplate[] }> => {
-  const [workouts, templates] = await Promise.all([
+): Promise<{
+  workouts: Workout[];
+  workoutSummariesById: Record<string, string>;
+  templates: WorkoutTemplate[];
+  workspaceMembers: WorkspaceMember[];
+}> => {
+  const [workouts, templates, workspaceMembers] = await Promise.all([
     fetchWorkouts(activeWorkspaceId),
     fetchTemplates(activeWorkspaceId),
+    fetchWorkspaceMembers(activeWorkspaceId).catch(() => []),
   ]);
 
-  return { workouts, templates };
+  let workoutSummariesById: Record<string, string> = {};
+  try {
+    workoutSummariesById = await fetchWorkoutSummaries(
+      activeWorkspaceId,
+      workouts.map((workout) => workout.id),
+    );
+  } catch {
+    workoutSummariesById = {};
+  }
+
+  return { workouts, workoutSummariesById, templates, workspaceMembers };
 };
 
 const initialNestedState = {
+  workoutSummariesById: {} as Record<string, string>,
   exercisesByWorkout: {} as Record<string, Exercise[]>,
   setsByExercise: {} as Record<string, WorkoutSet[]>,
   exerciseSummaryById: {} as Record<string, string>,
@@ -494,10 +986,12 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
   sessionUserId: null,
   workspaceId: '',
   workspaces: [],
+  workspaceMembers: [],
   workspaceSelectionRequired: false,
 
   workouts: [],
   templates: [],
+  analytics: null,
   ...initialNestedState,
 
   loading: false,
@@ -527,9 +1021,11 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         sessionUserId: null,
         workspaceId: '',
         workspaces: [],
+        workspaceMembers: [],
         workspaceSelectionRequired: false,
         workouts: [],
         templates: [],
+        analytics: null,
         ...initialNestedState,
       });
       return;
@@ -541,12 +1037,16 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
       const resolution = await ensureWorkspace(savedWorkspaceId);
 
       let workouts: Workout[] = [];
+      let workoutSummariesById: Record<string, string> = {};
       let templates: WorkoutTemplate[] = [];
+      let workspaceMembers: WorkspaceMember[] = [];
 
       if (resolution.activeWorkspaceId) {
         const data = await loadWorkspaceScopedData(resolution.activeWorkspaceId);
         workouts = data.workouts;
+        workoutSummariesById = data.workoutSummariesById;
         templates = data.templates;
+        workspaceMembers = data.workspaceMembers;
         safeLocalStorage.set(WORKSPACE_KEY, resolution.activeWorkspaceId);
       } else {
         safeLocalStorage.remove(WORKSPACE_KEY);
@@ -557,18 +1057,23 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workspaces: resolution.workspaces,
         workspaceSelectionRequired:
           resolution.workspaces.length > 1 && resolution.activeWorkspaceId.length === 0,
-        workouts,
-        templates,
         ...initialNestedState,
+        workouts,
+        workoutSummariesById,
+        templates,
+        workspaceMembers,
+        analytics: null,
         message: resolution.autoCreated ? 'Создано новое пространство.' : null,
       });
     } catch (innerError) {
       set({
         workspaceId: '',
         workspaces: [],
+        workspaceMembers: [],
         workspaceSelectionRequired: false,
         workouts: [],
         templates: [],
+        analytics: null,
         ...initialNestedState,
         error: formatError(innerError),
       });
@@ -637,12 +1142,16 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
       const resolution = await ensureWorkspace(savedWorkspaceId);
 
       let workouts: Workout[] = [];
+      let workoutSummariesById: Record<string, string> = {};
       let templates: WorkoutTemplate[] = [];
+      let workspaceMembers: WorkspaceMember[] = [];
 
       if (resolution.activeWorkspaceId) {
         const dataByWorkspace = await loadWorkspaceScopedData(resolution.activeWorkspaceId);
         workouts = dataByWorkspace.workouts;
+        workoutSummariesById = dataByWorkspace.workoutSummariesById;
         templates = dataByWorkspace.templates;
+        workspaceMembers = dataByWorkspace.workspaceMembers;
         safeLocalStorage.set(WORKSPACE_KEY, resolution.activeWorkspaceId);
       } else {
         safeLocalStorage.remove(WORKSPACE_KEY);
@@ -655,9 +1164,12 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workspaces: resolution.workspaces,
         workspaceSelectionRequired:
           resolution.workspaces.length > 1 && resolution.activeWorkspaceId.length === 0,
-        workouts,
-        templates,
         ...initialNestedState,
+        workouts,
+        workoutSummariesById,
+        templates,
+        workspaceMembers,
+        analytics: null,
         message: resolution.autoCreated
           ? 'Вход выполнен. Создано новое пространство.'
           : 'Вход выполнен.',
@@ -683,9 +1195,11 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         sessionUserId: null,
         workspaceId: '',
         workspaces: [],
+        workspaceMembers: [],
         workspaceSelectionRequired: false,
         workouts: [],
         templates: [],
+        analytics: null,
         ...initialNestedState,
         message: 'Вы вышли из аккаунта.',
       });
@@ -709,12 +1223,16 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
       const resolution = await ensureWorkspace(get().workspaceId);
 
       let workouts: Workout[] = [];
+      let workoutSummariesById: Record<string, string> = {};
       let templates: WorkoutTemplate[] = [];
+      let workspaceMembers: WorkspaceMember[] = [];
 
       if (resolution.activeWorkspaceId) {
         const dataByWorkspace = await loadWorkspaceScopedData(resolution.activeWorkspaceId);
         workouts = dataByWorkspace.workouts;
+        workoutSummariesById = dataByWorkspace.workoutSummariesById;
         templates = dataByWorkspace.templates;
+        workspaceMembers = dataByWorkspace.workspaceMembers;
         safeLocalStorage.set(WORKSPACE_KEY, resolution.activeWorkspaceId);
       } else {
         safeLocalStorage.remove(WORKSPACE_KEY);
@@ -725,9 +1243,12 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workspaces: resolution.workspaces,
         workspaceSelectionRequired:
           resolution.workspaces.length > 1 && resolution.activeWorkspaceId.length === 0,
-        workouts,
-        templates,
         ...initialNestedState,
+        workouts,
+        workoutSummariesById,
+        templates,
+        workspaceMembers,
+        analytics: null,
         message: resolution.autoCreated ? 'Создано новое пространство.' : null,
       });
     } catch (innerError) {
@@ -753,10 +1274,118 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
       set({
         workspaceId: id,
         workspaceSelectionRequired: false,
-        workouts: dataByWorkspace.workouts,
-        templates: dataByWorkspace.templates,
         ...initialNestedState,
+        workouts: dataByWorkspace.workouts,
+        workoutSummariesById: dataByWorkspace.workoutSummariesById,
+        templates: dataByWorkspace.templates,
+        workspaceMembers: dataByWorkspace.workspaceMembers,
+        analytics: null,
       });
+    } catch (innerError) {
+      set({ error: formatError(innerError) });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  async loadWorkspaceMembers() {
+    const workspaceId = get().workspaceId.trim();
+    if (!workspaceId) {
+      set({ error: 'Сначала выберите пространство.' });
+      return;
+    }
+
+    set({ loading: true, error: null, message: null });
+
+    try {
+      const workspaceMembers = await fetchWorkspaceMembers(workspaceId);
+      set({ workspaceMembers });
+    } catch (innerError) {
+      set({ error: formatError(innerError) });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  async inviteCoachByEmail(email) {
+    const workspaceId = get().workspaceId.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!workspaceId) {
+      throw new Error('Сначала выберите пространство.');
+    }
+
+    if (!normalizedEmail) {
+      throw new Error('Введите email тренера.');
+    }
+
+    set({ loading: true, error: null, message: null });
+
+    try {
+      const { error } = await supabase.rpc('invite_workspace_member_by_email', {
+        wid: workspaceId,
+        member_email: normalizedEmail,
+        member_role: 'coach',
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      const workspaceMembers = await fetchWorkspaceMembers(workspaceId);
+      set({ workspaceMembers, message: 'Тренер приглашен.' });
+    } catch (innerError) {
+      const message = formatError(innerError);
+      set({ error: message });
+      throw new Error(message);
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  async removeWorkspaceMember(userId) {
+    const workspaceId = get().workspaceId.trim();
+
+    if (!workspaceId) {
+      throw new Error('Сначала выберите пространство.');
+    }
+
+    set({ loading: true, error: null, message: null });
+
+    try {
+      const { error } = await supabase
+        .from('workspace_members')
+        .delete()
+        .eq('workspace_id', workspaceId)
+        .eq('user_id', userId);
+
+      if (error) {
+        throw error;
+      }
+
+      const workspaceMembers = await fetchWorkspaceMembers(workspaceId);
+      set({ workspaceMembers, message: 'Участник удален из пространства.' });
+    } catch (innerError) {
+      const message = formatError(innerError);
+      set({ error: message });
+      throw new Error(message);
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  async loadAnalytics(periodDays = 56) {
+    const workspaceId = get().workspaceId.trim();
+    if (!workspaceId) {
+      set({ error: 'Сначала выберите пространство.' });
+      return;
+    }
+
+    set({ loading: true, error: null, message: null });
+
+    try {
+      const analytics = await fetchWorkspaceAnalytics(workspaceId, periodDays);
+      set({ analytics });
     } catch (innerError) {
       set({ error: formatError(innerError) });
     } finally {
@@ -774,9 +1403,19 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
     set({ loading: true, error: null, message: null });
     try {
       const workouts = await fetchWorkouts(workspaceId);
-      set({ workouts });
+      let workoutSummariesById: Record<string, string> = {};
+      try {
+        workoutSummariesById = await fetchWorkoutSummaries(
+          workspaceId,
+          workouts.map((workout) => workout.id),
+        );
+      } catch {
+        workoutSummariesById = {};
+      }
+
+      set({ workouts, workoutSummariesById });
     } catch (innerError) {
-      set({ error: formatError(innerError), workouts: [] });
+      set({ error: formatError(innerError), workouts: [], workoutSummariesById: {} });
     } finally {
       set({ loading: false });
     }
@@ -826,6 +1465,10 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
 
       set((state) => ({
         workouts: sortWorkouts([createdWorkout, ...state.workouts]),
+        workoutSummariesById: {
+          ...state.workoutSummariesById,
+          [createdWorkout.id]: 'Нет упражнений.',
+        },
         message: 'Тренировка создана.',
       }));
 
@@ -921,6 +1564,8 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
 
         const nextSetsByExercise = { ...state.setsByExercise };
         const nextExerciseSummaryById = { ...state.exerciseSummaryById };
+        const nextWorkoutSummariesById = { ...state.workoutSummariesById };
+        delete nextWorkoutSummariesById[id];
 
         removedExercises.forEach((exercise) => {
           delete nextSetsByExercise[exercise.id];
@@ -929,6 +1574,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
 
         return {
           workouts: state.workouts.filter((workout) => workout.id !== id),
+          workoutSummariesById: nextWorkoutSummariesById,
           exercisesByWorkout: nextExercisesByWorkout,
           setsByExercise: nextSetsByExercise,
           exerciseSummaryById: nextExerciseSummaryById,
@@ -969,6 +1615,10 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
           [workoutId]: exercises,
         },
         exerciseSummaryById: nextSummaryByExerciseId,
+        workoutSummariesById: {
+          ...state.workoutSummariesById,
+          [workoutId]: buildWorkoutSummary(exercises, nextSummaryByExerciseId),
+        },
       }));
     } catch (innerError) {
       set({ error: formatError(innerError) });
@@ -1032,14 +1682,21 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
 
       set((state) => {
         const current = state.exercisesByWorkout[workoutId] ?? [];
+        const nextExercises = sortExercises([...current, createdExercise]);
+        const nextExerciseSummaryById = {
+          ...state.exerciseSummaryById,
+          [createdExercise.id]: 'Нет подходов',
+        };
+
         return {
           exercisesByWorkout: {
             ...state.exercisesByWorkout,
-            [workoutId]: sortExercises([...current, createdExercise]),
+            [workoutId]: nextExercises,
           },
-          exerciseSummaryById: {
-            ...state.exerciseSummaryById,
-            [createdExercise.id]: 'Нет подходов',
+          exerciseSummaryById: nextExerciseSummaryById,
+          workoutSummariesById: {
+            ...state.workoutSummariesById,
+            [workoutId]: buildWorkoutSummary(nextExercises, nextExerciseSummaryById),
           },
           message: 'Упражнение добавлено.',
         };
@@ -1079,6 +1736,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
 
       set((state) => {
         const currentExercises = state.exercisesByWorkout[workoutId] ?? [];
+        const nextExercises = currentExercises.filter((exercise) => exercise.id !== exerciseId);
         const nextSetsByExercise = { ...state.setsByExercise };
         const nextSummaryByExerciseId = { ...state.exerciseSummaryById };
 
@@ -1088,10 +1746,14 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         return {
           exercisesByWorkout: {
             ...state.exercisesByWorkout,
-            [workoutId]: currentExercises.filter((exercise) => exercise.id !== exerciseId),
+            [workoutId]: nextExercises,
           },
           setsByExercise: nextSetsByExercise,
           exerciseSummaryById: nextSummaryByExerciseId,
+          workoutSummariesById: {
+            ...state.workoutSummariesById,
+            [workoutId]: buildWorkoutSummary(nextExercises, nextSummaryByExerciseId),
+          },
           message: 'Упражнение удалено.',
         };
       });
@@ -1115,6 +1777,16 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
     try {
       const sets = await fetchSets(workspaceId, workoutId, exerciseId);
       set((state) => ({
+        workoutSummariesById: {
+          ...state.workoutSummariesById,
+          [workoutId]: buildWorkoutSummary(
+            state.exercisesByWorkout[workoutId] ?? [],
+            {
+              ...state.exerciseSummaryById,
+              [exerciseId]: buildExerciseSummary(sets),
+            },
+          ),
+        },
         setsByExercise: {
           ...state.setsByExercise,
           [exerciseId]: sets,
@@ -1173,15 +1845,23 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
       set((state) => {
         const currentSets = state.setsByExercise[exerciseId] ?? [];
         const nextSets = sortWorkoutSets([...currentSets, createdSet]);
+        const nextExerciseSummaryById = {
+          ...state.exerciseSummaryById,
+          [exerciseId]: buildExerciseSummary(nextSets),
+        };
 
         return {
           setsByExercise: {
             ...state.setsByExercise,
             [exerciseId]: nextSets,
           },
-          exerciseSummaryById: {
-            ...state.exerciseSummaryById,
-            [exerciseId]: buildExerciseSummary(nextSets),
+          exerciseSummaryById: nextExerciseSummaryById,
+          workoutSummariesById: {
+            ...state.workoutSummariesById,
+            [workoutId]: buildWorkoutSummary(
+              state.exercisesByWorkout[workoutId] ?? [],
+              nextExerciseSummaryById,
+            ),
           },
           message: 'Подход добавлен.',
         };
@@ -1223,15 +1903,23 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
       set((state) => {
         const currentSets = state.setsByExercise[exerciseId] ?? [];
         const nextSets = currentSets.filter((setRow) => setRow.id !== setId);
+        const nextExerciseSummaryById = {
+          ...state.exerciseSummaryById,
+          [exerciseId]: buildExerciseSummary(nextSets),
+        };
 
         return {
           setsByExercise: {
             ...state.setsByExercise,
             [exerciseId]: nextSets,
           },
-          exerciseSummaryById: {
-            ...state.exerciseSummaryById,
-            [exerciseId]: buildExerciseSummary(nextSets),
+          exerciseSummaryById: nextExerciseSummaryById,
+          workoutSummariesById: {
+            ...state.workoutSummariesById,
+            [workoutId]: buildWorkoutSummary(
+              state.exercisesByWorkout[workoutId] ?? [],
+              nextExerciseSummaryById,
+            ),
           },
           message: 'Подход удален.',
         };
@@ -1620,6 +2308,11 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
 
         return {
           workouts: sortWorkouts([createdWorkout, ...state.workouts]),
+          workoutSummariesById: {
+            ...state.workoutSummariesById,
+            [createdWorkout.id]:
+              createdExercises.length > 0 ? 'Подходы не заполнены.' : 'Нет упражнений.',
+          },
           exercisesByWorkout: {
             ...state.exercisesByWorkout,
             [createdWorkout.id]: createdExercises,
