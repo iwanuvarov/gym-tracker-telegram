@@ -8,6 +8,7 @@
   --primary: #f05f3d;
   --primary-dark: #c94f34;
   --danger: #ba3641;
+  --panel: #0b1118;
 }
 
 * {
@@ -23,6 +24,7 @@ body {
 
 h1,
 h2,
+h3,
 p {
   margin: 0;
 }
@@ -81,6 +83,10 @@ p {
   gap: 8px;
 }
 
+.wrap {
+  flex-wrap: wrap;
+}
+
 .row-between {
   justify-content: space-between;
   align-items: center;
@@ -122,6 +128,72 @@ p {
   background: #992e39;
 }
 
+.workspace-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.workspace-button {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.workspace-button:hover {
+  border-color: #2b425d;
+}
+
+.workspace-button.active {
+  border-color: var(--primary);
+  background: #1e1411;
+}
+
+.workspace-name {
+  font-weight: 600;
+}
+
+.workspace-meta {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.section-nav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.nav-button {
+  border: 1px solid #2b3f58;
+  border-radius: 10px;
+  background: #111b28;
+  color: var(--text);
+  padding: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.nav-button.active {
+  border-color: var(--primary);
+  background: #2a1711;
+}
+
+.stack-header {
+  display: grid;
+  gap: 6px;
+}
+
 .list {
   list-style: none;
   margin: 0;
@@ -138,12 +210,23 @@ p {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px;
-  background: #0b1118;
+  background: var(--panel);
+}
+
+.list-item-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
 }
 
 .item-title {
   font-weight: 600;
-  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.item-subtitle {
+  color: #d6deea;
+  font-size: 14px;
 }
 
 .notice {
@@ -162,4 +245,21 @@ p {
   color: #f4a5ac;
   border-color: #81343d;
   background: #2a1216;
+}
+
+.notice.info {
+  color: #9ecbff;
+  border-color: #31537c;
+  background: #102033;
+}
+
+@media (max-width: 620px) {
+  .list-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .section-nav {
+    grid-template-columns: 1fr;
+  }
 }
