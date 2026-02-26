@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 import { supabase } from '../lib/supabase';
-import { initTelegramWebApp, type TelegramUser } from '../lib/telegram';
+import { getTelegramInitData, initTelegramWebApp, type TelegramUser } from '../lib/telegram';
 
 type Workout = {
   id: string;
@@ -123,16 +123,11 @@ type StoreState = {
 
   loading: boolean;
   authLoading: boolean;
-  email: string;
-  otpCode: string;
   message: string | null;
   error: string | null;
 
   init: () => Promise<void>;
-  setEmail: (value: string) => void;
-  setOtpCode: (value: string) => void;
-  requestOtp: () => Promise<void>;
-  verifyOtp: () => Promise<void>;
+  signInWithTelegram: () => Promise<void>;
   signOut: () => Promise<void>;
 
   refreshWorkspaces: () => Promise<void>;
@@ -202,6 +197,24 @@ type SetSummaryRow = {
   reps: number | string;
   weight: number | string;
   created_at: string;
+};
+
+type TelegramAuthResponse = {
+  accessToken: string;
+  refreshToken: string;
+  userId: string;
+  isNewUser: boolean;
+};
+
+type AuthBootstrapData = {
+  workspaceId: string;
+  workspaces: Workspace[];
+  workspaceSelectionRequired: boolean;
+  workouts: Workout[];
+  workoutSummariesById: Record<string, string>;
+  templates: WorkoutTemplate[];
+  workspaceMembers: WorkspaceMember[];
+  autoCreated: boolean;
 };
 
 const WORKOUT_SELECT_COLUMNS =
@@ -973,6 +986,71 @@ const loadWorkspaceScopedData = async (
   return { workouts, workoutSummariesById, templates, workspaceMembers };
 };
 
+const buildAuthBootstrapData = async (savedWorkspaceId: string): Promise<AuthBootstrapData> => {
+  const resolution = await ensureWorkspace(savedWorkspaceId);
+
+  let workouts: Workout[] = [];
+  let workoutSummariesById: Record<string, string> = {};
+  let templates: WorkoutTemplate[] = [];
+  let workspaceMembers: WorkspaceMember[] = [];
+
+  if (resolution.activeWorkspaceId) {
+    const data = await loadWorkspaceScopedData(resolution.activeWorkspaceId);
+    workouts = data.workouts;
+    workoutSummariesById = data.workoutSummariesById;
+    templates = data.templates;
+    workspaceMembers = data.workspaceMembers;
+    safeLocalStorage.set(WORKSPACE_KEY, resolution.activeWorkspaceId);
+  } else {
+    safeLocalStorage.remove(WORKSPACE_KEY);
+  }
+
+  return {
+    workspaceId: resolution.activeWorkspaceId,
+    workspaces: resolution.workspaces,
+    workspaceSelectionRequired:
+      resolution.workspaces.length > 1 && resolution.activeWorkspaceId.length === 0,
+    workouts,
+    workoutSummariesById,
+    templates,
+    workspaceMembers,
+    autoCreated: resolution.autoCreated,
+  };
+};
+
+const createTelegramSession = async (initData: string): Promise<TelegramAuthResponse> => {
+  const { data, error } = await supabase.functions.invoke<TelegramAuthResponse>('telegram-auth', {
+    body: { initData },
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data?.accessToken || !data.refreshToken || !data.userId) {
+    throw new Error('Сервер авторизации вернул неполные данные сессии.');
+  }
+
+  const { data: sessionData, error: setSessionError } = await supabase.auth.setSession({
+    access_token: data.accessToken,
+    refresh_token: data.refreshToken,
+  });
+
+  if (setSessionError) {
+    throw setSessionError;
+  }
+
+  const sessionUserId = sessionData.user?.id;
+  if (!sessionUserId) {
+    throw new Error('Не удалось активировать сессию после Telegram-авторизации.');
+  }
+
+  return {
+    ...data,
+    userId: sessionUserId,
+  };
+};
+
 const initialNestedState = {
   workoutSummariesById: {} as Record<string, string>,
   exercisesByWorkout: {} as Record<string, Exercise[]>,
@@ -996,8 +1074,6 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
 
   loading: false,
   authLoading: false,
-  email: '',
-  otpCode: '',
   message: null,
   error: null,
 
@@ -1028,42 +1104,30 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         analytics: null,
         ...initialNestedState,
       });
+
+      const initData = getTelegramInitData();
+      if (telegramUser && initData) {
+        await get().signInWithTelegram();
+      }
       return;
     }
 
     set({ telegramUser, sessionUserId: session.user.id, loading: true, error: null });
 
     try {
-      const resolution = await ensureWorkspace(savedWorkspaceId);
-
-      let workouts: Workout[] = [];
-      let workoutSummariesById: Record<string, string> = {};
-      let templates: WorkoutTemplate[] = [];
-      let workspaceMembers: WorkspaceMember[] = [];
-
-      if (resolution.activeWorkspaceId) {
-        const data = await loadWorkspaceScopedData(resolution.activeWorkspaceId);
-        workouts = data.workouts;
-        workoutSummariesById = data.workoutSummariesById;
-        templates = data.templates;
-        workspaceMembers = data.workspaceMembers;
-        safeLocalStorage.set(WORKSPACE_KEY, resolution.activeWorkspaceId);
-      } else {
-        safeLocalStorage.remove(WORKSPACE_KEY);
-      }
+      const bootstrap = await buildAuthBootstrapData(savedWorkspaceId);
 
       set({
-        workspaceId: resolution.activeWorkspaceId,
-        workspaces: resolution.workspaces,
-        workspaceSelectionRequired:
-          resolution.workspaces.length > 1 && resolution.activeWorkspaceId.length === 0,
+        workspaceId: bootstrap.workspaceId,
+        workspaces: bootstrap.workspaces,
+        workspaceSelectionRequired: bootstrap.workspaceSelectionRequired,
         ...initialNestedState,
-        workouts,
-        workoutSummariesById,
-        templates,
-        workspaceMembers,
+        workouts: bootstrap.workouts,
+        workoutSummariesById: bootstrap.workoutSummariesById,
+        templates: bootstrap.templates,
+        workspaceMembers: bootstrap.workspaceMembers,
         analytics: null,
-        message: resolution.autoCreated ? 'Создано новое пространство.' : null,
+        message: bootstrap.autoCreated ? 'Создано новое пространство.' : null,
       });
     } catch (innerError) {
       set({
@@ -1082,100 +1146,56 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
     }
   },
 
-  setEmail(value) {
-    set({ email: value });
-  },
+  async signInWithTelegram() {
+    const telegramUser = get().telegramUser ?? initTelegramWebApp();
+    const initData = getTelegramInitData();
 
-  setOtpCode(value) {
-    set({ otpCode: value });
-  },
-
-  async requestOtp() {
-    const email = get().email.trim().toLowerCase();
-    if (!email) {
-      set({ error: 'Введите email.' });
-      return;
-    }
-
-    set({ authLoading: true, error: null, message: null });
-    try {
-      const { error } = await supabase.auth.signInWithOtp({ email });
-      if (error) {
-        throw error;
-      }
-      set({ message: 'Код отправлен на email.' });
-    } catch (innerError) {
-      set({ error: formatError(innerError) });
-    } finally {
-      set({ authLoading: false });
-    }
-  },
-
-  async verifyOtp() {
-    const email = get().email.trim().toLowerCase();
-    const token = get().otpCode.trim();
-
-    if (!email || !token) {
-      set({ error: 'Введите email и код.' });
+    if (!telegramUser || !initData) {
+      set({
+        telegramUser: telegramUser ?? null,
+        error: 'Откройте приложение внутри Telegram (через кнопку Web App у бота).',
+      });
       return;
     }
 
     set({ authLoading: true, loading: true, error: null, message: null });
 
     try {
-      const { data, error } = await supabase.auth.verifyOtp({
-        email,
-        token,
-        type: 'email',
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      const userId = data.user?.id;
-      if (!userId) {
-        throw new Error('Сессия не создана после подтверждения кода.');
-      }
-
+      const session = await createTelegramSession(initData);
       const savedWorkspaceId = safeLocalStorage.get(WORKSPACE_KEY) ?? '';
-      const resolution = await ensureWorkspace(savedWorkspaceId);
-
-      let workouts: Workout[] = [];
-      let workoutSummariesById: Record<string, string> = {};
-      let templates: WorkoutTemplate[] = [];
-      let workspaceMembers: WorkspaceMember[] = [];
-
-      if (resolution.activeWorkspaceId) {
-        const dataByWorkspace = await loadWorkspaceScopedData(resolution.activeWorkspaceId);
-        workouts = dataByWorkspace.workouts;
-        workoutSummariesById = dataByWorkspace.workoutSummariesById;
-        templates = dataByWorkspace.templates;
-        workspaceMembers = dataByWorkspace.workspaceMembers;
-        safeLocalStorage.set(WORKSPACE_KEY, resolution.activeWorkspaceId);
-      } else {
-        safeLocalStorage.remove(WORKSPACE_KEY);
-      }
+      const bootstrap = await buildAuthBootstrapData(savedWorkspaceId);
 
       set({
-        sessionUserId: userId,
-        otpCode: '',
-        workspaceId: resolution.activeWorkspaceId,
-        workspaces: resolution.workspaces,
-        workspaceSelectionRequired:
-          resolution.workspaces.length > 1 && resolution.activeWorkspaceId.length === 0,
+        telegramUser,
+        sessionUserId: session.userId,
+        workspaceId: bootstrap.workspaceId,
+        workspaces: bootstrap.workspaces,
+        workspaceSelectionRequired: bootstrap.workspaceSelectionRequired,
         ...initialNestedState,
-        workouts,
-        workoutSummariesById,
-        templates,
-        workspaceMembers,
+        workouts: bootstrap.workouts,
+        workoutSummariesById: bootstrap.workoutSummariesById,
+        templates: bootstrap.templates,
+        workspaceMembers: bootstrap.workspaceMembers,
         analytics: null,
-        message: resolution.autoCreated
-          ? 'Вход выполнен. Создано новое пространство.'
-          : 'Вход выполнен.',
+        message: bootstrap.autoCreated
+          ? 'Вход через Telegram выполнен. Создано новое пространство.'
+          : session.isNewUser
+            ? 'Аккаунт Telegram подключен. Вход выполнен.'
+            : 'Вход через Telegram выполнен.',
       });
     } catch (innerError) {
-      set({ error: formatError(innerError) });
+      set({
+        sessionUserId: null,
+        workspaceId: '',
+        workspaces: [],
+        workspaceMembers: [],
+        workspaceSelectionRequired: false,
+        workouts: [],
+        templates: [],
+        analytics: null,
+        ...initialNestedState,
+        error: formatError(innerError),
+      });
     } finally {
       set({ authLoading: false, loading: false });
     }

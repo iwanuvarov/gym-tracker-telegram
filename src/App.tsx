@@ -37,15 +37,10 @@ export default function App() {
     analytics,
     loading,
     authLoading,
-    email,
-    otpCode,
     message,
     error,
     init,
-    setEmail,
-    setOtpCode,
-    requestOtp,
-    verifyOtp,
+    signInWithTelegram,
     signOut,
     refreshWorkspaces,
     selectWorkspace,
@@ -226,43 +221,30 @@ export default function App() {
       </header>
 
       <section className="card">
-        <h2>Вход (OTP fallback)</h2>
+        <h2>Вход через Telegram</h2>
         <p className="muted">
-          Пока Telegram auth bridge не подключен, используйте вход по email-коду.
+          Авторизация выполняется через Telegram Mini App и вашего бота.
         </p>
-        <label className="field-label" htmlFor="email-input">
-          Email
-        </label>
-        <input
-          id="email-input"
-          className="input"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          placeholder="you@example.com"
-          autoCapitalize="none"
-          autoCorrect="off"
-        />
+        {!telegramUser ? (
+          <p className="notice info">Откройте приложение из Telegram-бота, чтобы выполнить вход.</p>
+        ) : null}
+
         <div className="row wrap">
-          <button className="button ghost" onClick={() => runSafely(requestOtp())} disabled={authLoading}>
-            Отправить код
+          <button
+            className="button"
+            onClick={() => runSafely(signInWithTelegram())}
+            disabled={authLoading || !telegramUser}
+          >
+            Войти через Telegram
           </button>
-          <button className="button ghost" onClick={() => runSafely(signOut())} disabled={authLoading}>
+          <button
+            className="button ghost"
+            onClick={() => runSafely(signOut())}
+            disabled={authLoading || !sessionUserId}
+          >
             Выйти
           </button>
         </div>
-        <label className="field-label" htmlFor="otp-input">
-          Код
-        </label>
-        <input
-          id="otp-input"
-          className="input"
-          value={otpCode}
-          onChange={(event) => setOtpCode(event.target.value)}
-          placeholder="123456"
-        />
-        <button className="button" onClick={() => runSafely(verifyOtp())} disabled={authLoading}>
-          Подтвердить код
-        </button>
       </section>
 
       <section className="card">

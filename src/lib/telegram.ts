@@ -5,6 +5,8 @@ export type TelegramUser = {
   lastName?: string;
 };
 
+export const getTelegramInitData = (): string => window.Telegram?.WebApp?.initData ?? '';
+
 export const initTelegramWebApp = (): TelegramUser | null => {
   const webApp = window.Telegram?.WebApp;
   if (!webApp) {

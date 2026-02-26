@@ -10,7 +10,8 @@
 1. User opens Mini App from bot.
 2. Mini App gets `initData` from Telegram WebApp SDK.
 3. Backend verifies `initData` with bot token.
-4. Backend maps Telegram user to app user and returns session/token for Supabase access.
+4. Backend maps Telegram user to Supabase Auth user and returns `access/refresh` tokens.
+5. Front activates Supabase session via `supabase.auth.setSession(...)`.
 
 ## Data model reuse
 Reuse existing entities:
@@ -25,3 +26,7 @@ Reuse existing entities:
 ## Additions (future)
 - telegram_identities(user_id, telegram_user_id, username, created_at)
 - possibly bot_events/audit table
+
+## Implemented in this repo
+- `supabase/functions/telegram-auth`: verifies `initData` and creates/returns Supabase session.
+- `supabase/migrations/202602270001_create_telegram_identities.sql`: Telegram identity mapping table.

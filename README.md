@@ -8,7 +8,7 @@
 - Supabase клиент
 - Zustand store
 - MVP-экран:
-  - OTP login (fallback до Telegram auth bridge)
+  - Telegram login (через `initData` + Supabase Edge Function)
   - выбор `workspace_id`
   - загрузка тренировок
   - создание/удаление тренировок
@@ -39,13 +39,26 @@ npm run dev
    - `Menu Button` -> `Web App` -> указать URL
 3. Открыть бота в Telegram и нажать кнопку меню.
 
-## Важно про auth
-Сейчас в проекте реализован `OTP fallback` для быстрого старта.
-Это рабочий путь для Supabase RLS, но для продакшн Telegram Mini App нужен отдельный auth bridge:
-1. Front получает `initData` из Telegram WebApp.
-2. Backend проверяет подпись `initData` через bot token.
-3. Backend выдает сессию приложения (или Supabase custom auth flow).
+## Настройка Telegram auth
+1. Применить миграцию:
+```bash
+supabase db push
+```
+2. Деплой edge function:
+```bash
+supabase functions deploy telegram-auth
+```
+3. Задать secrets для функции:
+```bash
+supabase secrets set TELEGRAM_BOT_TOKEN=... TELEGRAM_AUTH_PASSWORD_SECRET=...
+```
+
+Функция `telegram-auth`:
+- валидирует подпись `initData` от Telegram,
+- создает/находит пользователя Supabase Auth,
+- привязывает `telegram_user_id` в `telegram_identities`,
+- возвращает `access/refresh` токены, которые фронт сохраняет как обычную сессию Supabase.
 
 ## Связь с мобильным проектом
 - Можно использовать тот же Supabase проект, те же таблицы и RLS-политики.
-- Рекомендовано добавить таблицу `telegram_identities` отдельной миграцией.
+- В Telegram-проекте уже добавлена миграция `telegram_identities`.
