@@ -1,7 +1,7 @@
 create table if not exists public.workspace_invites (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
-  role public.workspace_member_role not null default 'coach',
+  role text not null default 'coach' check (role in ('owner', 'coach', 'member')),
   invite_token text not null unique,
   created_by uuid not null references auth.users(id) on delete cascade,
   created_at timestamptz not null default timezone('utc', now()),
