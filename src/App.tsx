@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { openTelegramLink } from './lib/telegram';
 import { useMiniAppStore } from './store/useMiniAppStore';
 
 const todayIso = (): string => new Date().toISOString().slice(0, 10);
@@ -26,6 +27,7 @@ export default function App() {
     workspaceId,
     workspaces,
     workspaceMembers,
+    coachInviteLink,
     workspaceSelectionRequired,
     workouts,
     workoutSummariesById,
@@ -45,7 +47,7 @@ export default function App() {
     refreshWorkspaces,
     selectWorkspace,
     loadWorkspaceMembers,
-    inviteCoachByEmail,
+    createCoachInviteLink,
     removeWorkspaceMember,
     loadAnalytics,
     loadWorkouts,
@@ -89,7 +91,6 @@ export default function App() {
   const [newTemplateExerciseName, setNewTemplateExerciseName] = useState('');
   const [templateWorkoutDate, setTemplateWorkoutDate] = useState(todayIso);
   const [templateWorkoutTitle, setTemplateWorkoutTitle] = useState('');
-  const [inviteCoachEmail, setInviteCoachEmail] = useState('');
   const [analyticsDays, setAnalyticsDays] = useState('56');
 
   useEffect(() => {
@@ -308,33 +309,46 @@ export default function App() {
 
         <p className="muted">Ваша роль: {currentUserRole ?? 'не определена'}</p>
 
-        <label className="field-label" htmlFor="coach-email-input">
-          Email тренера
-        </label>
-        <input
-          id="coach-email-input"
-          className="input"
-          value={inviteCoachEmail}
-          onChange={(event) => setInviteCoachEmail(event.target.value)}
-          placeholder="coach@example.com"
-          autoCapitalize="none"
-          autoCorrect="off"
-          disabled={!canInviteCoach}
-        />
-
         <button
           className="button"
-          disabled={loading || !canInviteCoach || !inviteCoachEmail.trim()}
-          onClick={() =>
-            runSafely(
-              inviteCoachByEmail(inviteCoachEmail).then(() => {
-                setInviteCoachEmail('');
-              }),
-            )
-          }
+          disabled={loading || !canInviteCoach}
+          onClick={() => runSafely(createCoachInviteLink())}
         >
-          Пригласить тренера
+          Создать Telegram-инвайт
         </button>
+
+        {coachInviteLink ? (
+          <>
+            <label className="field-label" htmlFor="coach-link-input">
+              Ссылка приглашения
+            </label>
+            <input id="coach-link-input" className="input" value={coachInviteLink} readOnly />
+            <div className="row wrap">
+              <button
+                className="button ghost"
+                onClick={() =>
+                  runSafely(
+                    navigator.clipboard
+                      .writeText(coachInviteLink)
+                      .then(() => Promise.resolve())
+                      .catch(() => Promise.resolve()),
+                  )
+                }
+              >
+                Копировать
+              </button>
+              <button
+                className="button ghost"
+                onClick={() => {
+                  const shareLink = `https://t.me/share/url?url=${encodeURIComponent(coachInviteLink)}`;
+                  openTelegramLink(shareLink);
+                }}
+              >
+                Отправить в Telegram
+              </button>
+            </div>
+          </>
+        ) : null}
 
         {!canInviteCoach ? (
           <p className="muted">Приглашать тренера может только владелец пространства.</p>
