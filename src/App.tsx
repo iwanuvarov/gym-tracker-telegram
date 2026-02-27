@@ -42,7 +42,6 @@ export default function App() {
     message,
     error,
     init,
-    signInWithTelegram,
     signOut,
     refreshWorkspaces,
     selectWorkspace,
@@ -230,14 +229,15 @@ export default function App() {
           <p className="notice info">Откройте приложение из Telegram-бота, чтобы выполнить вход.</p>
         ) : null}
 
+        {!sessionUserId ? (
+          <p className="notice info">
+            {authLoading ? 'Подключаем Telegram...' : 'Ожидаем автоматический вход через Telegram.'}
+          </p>
+        ) : (
+          <p className="muted">Вы авторизованы через Telegram.</p>
+        )}
+
         <div className="row wrap">
-          <button
-            className="button"
-            onClick={() => runSafely(signInWithTelegram())}
-            disabled={authLoading || !telegramUser}
-          >
-            Войти через Telegram
-          </button>
           <button
             className="button ghost"
             onClick={() => runSafely(signOut())}
