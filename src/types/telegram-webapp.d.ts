@@ -4,6 +4,7 @@ declare global {
       WebApp?: {
         initData: string;
         initDataUnsafe?: {
+          start_param?: string;
           user?: {
             id?: number;
             username?: string;
@@ -14,6 +15,7 @@ declare global {
         ready: () => void;
         expand: () => void;
         enableClosingConfirmation: () => void;
+        openTelegramLink?: (url: string) => void;
         colorScheme?: 'light' | 'dark';
       };
     };

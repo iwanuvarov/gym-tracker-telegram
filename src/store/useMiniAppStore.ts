@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 
+import { env } from '../lib/env';
 import { supabase } from '../lib/supabase';
-import { getTelegramInitData, initTelegramWebApp, type TelegramUser } from '../lib/telegram';
+import {
+  getTelegramInitData,
+  getTelegramStartParam,
+  initTelegramWebApp,
+  type TelegramUser,
+} from '../lib/telegram';
 
 type Workout = {
   id: string;
@@ -109,6 +115,7 @@ type StoreState = {
   workspaceId: string;
   workspaces: Workspace[];
   workspaceMembers: WorkspaceMember[];
+  coachInviteLink: string;
   workspaceSelectionRequired: boolean;
 
   workouts: Workout[];
@@ -133,7 +140,7 @@ type StoreState = {
   refreshWorkspaces: () => Promise<void>;
   selectWorkspace: (id: string) => Promise<void>;
   loadWorkspaceMembers: () => Promise<void>;
-  inviteCoachByEmail: (email: string) => Promise<void>;
+  createCoachInviteLink: () => Promise<string>;
   removeWorkspaceMember: (userId: string) => Promise<void>;
   loadAnalytics: (periodDays?: number) => Promise<void>;
 
@@ -215,6 +222,11 @@ type AuthBootstrapData = {
   templates: WorkoutTemplate[];
   workspaceMembers: WorkspaceMember[];
   autoCreated: boolean;
+};
+
+type InviteAcceptanceResult = {
+  workspaceId: string;
+  message: string;
 };
 
 const WORKOUT_SELECT_COLUMNS =
@@ -406,6 +418,61 @@ const generateWeekRange = (fromIso: string, toIso: string): string[] => {
   }
 
   return result;
+};
+
+const inviteStartParamPrefix = 'invite_';
+
+const extractInviteTokenFromStartParam = (startParam: string | null): string | null => {
+  if (!startParam) {
+    return null;
+  }
+
+  const normalized = startParam.trim();
+  if (!normalized.startsWith(inviteStartParamPrefix)) {
+    return null;
+  }
+
+  const token = normalized.slice(inviteStartParamPrefix.length).trim();
+  if (!/^[a-zA-Z0-9_-]{16,200}$/.test(token)) {
+    return null;
+  }
+
+  return token;
+};
+
+const buildCoachInviteLink = (token: string): string => {
+  const startParam = `${inviteStartParamPrefix}${token}`;
+  if (env.telegramBotUsername) {
+    return `https://t.me/${env.telegramBotUsername}/app?startapp=${encodeURIComponent(startParam)}`;
+  }
+
+  return `${window.location.origin}/?tgWebAppStartParam=${encodeURIComponent(startParam)}`;
+};
+
+const acceptInviteFromStartParam = async (): Promise<InviteAcceptanceResult | null> => {
+  const startParam = getTelegramStartParam();
+  const inviteToken = extractInviteTokenFromStartParam(startParam);
+
+  if (!inviteToken) {
+    return null;
+  }
+
+  const { data, error } = await supabase.rpc('accept_workspace_invite', {
+    invite_token: inviteToken,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  if (typeof data !== 'string' || data.length === 0) {
+    throw new Error('Не удалось принять приглашение тренера.');
+  }
+
+  return {
+    workspaceId: data,
+    message: 'Приглашение принято. Вы добавлены как тренер.',
+  };
 };
 
 const extractErrorText = (error: unknown): { message: string; details: string; code: string } => {
@@ -1065,6 +1132,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
   workspaceId: '',
   workspaces: [],
   workspaceMembers: [],
+  coachInviteLink: '',
   workspaceSelectionRequired: false,
 
   workouts: [],
@@ -1098,6 +1166,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workspaceId: '',
         workspaces: [],
         workspaceMembers: [],
+        coachInviteLink: '',
         workspaceSelectionRequired: false,
         workouts: [],
         templates: [],
@@ -1115,7 +1184,14 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
     set({ telegramUser, sessionUserId: session.user.id, loading: true, error: null });
 
     try {
-      const bootstrap = await buildAuthBootstrapData(savedWorkspaceId);
+      let acceptedInvite: InviteAcceptanceResult | null = null;
+      try {
+        acceptedInvite = await acceptInviteFromStartParam();
+      } catch (innerError) {
+        set({ error: formatError(innerError) });
+      }
+
+      const bootstrap = await buildAuthBootstrapData(acceptedInvite?.workspaceId ?? savedWorkspaceId);
 
       set({
         workspaceId: bootstrap.workspaceId,
@@ -1126,14 +1202,16 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workoutSummariesById: bootstrap.workoutSummariesById,
         templates: bootstrap.templates,
         workspaceMembers: bootstrap.workspaceMembers,
+        coachInviteLink: '',
         analytics: null,
-        message: bootstrap.autoCreated ? 'Создано новое пространство.' : null,
+        message: acceptedInvite?.message ?? (bootstrap.autoCreated ? 'Создано новое пространство.' : null),
       });
     } catch (innerError) {
       set({
         workspaceId: '',
         workspaces: [],
         workspaceMembers: [],
+        coachInviteLink: '',
         workspaceSelectionRequired: false,
         workouts: [],
         templates: [],
@@ -1163,7 +1241,15 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
     try {
       const session = await createTelegramSession(initData);
       const savedWorkspaceId = safeLocalStorage.get(WORKSPACE_KEY) ?? '';
-      const bootstrap = await buildAuthBootstrapData(savedWorkspaceId);
+
+      let acceptedInvite: InviteAcceptanceResult | null = null;
+      try {
+        acceptedInvite = await acceptInviteFromStartParam();
+      } catch (innerError) {
+        set({ error: formatError(innerError) });
+      }
+
+      const bootstrap = await buildAuthBootstrapData(acceptedInvite?.workspaceId ?? savedWorkspaceId);
 
       set({
         telegramUser,
@@ -1176,12 +1262,15 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workoutSummariesById: bootstrap.workoutSummariesById,
         templates: bootstrap.templates,
         workspaceMembers: bootstrap.workspaceMembers,
+        coachInviteLink: '',
         analytics: null,
-        message: bootstrap.autoCreated
-          ? 'Вход через Telegram выполнен. Создано новое пространство.'
-          : session.isNewUser
-            ? 'Аккаунт Telegram подключен. Вход выполнен.'
-            : 'Вход через Telegram выполнен.',
+        message:
+          acceptedInvite?.message ??
+          (bootstrap.autoCreated
+            ? 'Вход через Telegram выполнен. Создано новое пространство.'
+            : session.isNewUser
+              ? 'Аккаунт Telegram подключен. Вход выполнен.'
+              : 'Вход через Telegram выполнен.'),
       });
     } catch (innerError) {
       set({
@@ -1189,6 +1278,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workspaceId: '',
         workspaces: [],
         workspaceMembers: [],
+        coachInviteLink: '',
         workspaceSelectionRequired: false,
         workouts: [],
         templates: [],
@@ -1216,6 +1306,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workspaceId: '',
         workspaces: [],
         workspaceMembers: [],
+        coachInviteLink: '',
         workspaceSelectionRequired: false,
         workouts: [],
         templates: [],
@@ -1268,6 +1359,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workoutSummariesById,
         templates,
         workspaceMembers,
+        coachInviteLink: '',
         analytics: null,
         message: resolution.autoCreated ? 'Создано новое пространство.' : null,
       });
@@ -1299,6 +1391,7 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
         workoutSummariesById: dataByWorkspace.workoutSummariesById,
         templates: dataByWorkspace.templates,
         workspaceMembers: dataByWorkspace.workspaceMembers,
+        coachInviteLink: '',
         analytics: null,
       });
     } catch (innerError) {
@@ -1327,33 +1420,43 @@ export const useMiniAppStore = create<StoreState>((set, get) => ({
     }
   },
 
-  async inviteCoachByEmail(email) {
+  async createCoachInviteLink() {
     const workspaceId = get().workspaceId.trim();
-    const normalizedEmail = email.trim().toLowerCase();
 
     if (!workspaceId) {
       throw new Error('Сначала выберите пространство.');
     }
 
-    if (!normalizedEmail) {
-      throw new Error('Введите email тренера.');
-    }
-
     set({ loading: true, error: null, message: null });
 
     try {
-      const { error } = await supabase.rpc('invite_workspace_member_by_email', {
+      const { data, error } = await supabase.rpc('create_workspace_invite_for_coach', {
         wid: workspaceId,
-        member_email: normalizedEmail,
-        member_role: 'coach',
+        ttl_hours: 24 * 7,
       });
 
       if (error) {
         throw error;
       }
 
+      if (typeof data !== 'string' || data.length === 0) {
+        throw new Error('Сервер не вернул токен приглашения.');
+      }
+
+      const inviteLink = buildCoachInviteLink(data);
+
+      const helperMessage = env.telegramBotUsername
+        ? 'Ссылка готова. Отправьте её тренеру в Telegram.'
+        : 'Ссылка готова. Для корректной deep link добавьте VITE_TELEGRAM_BOT_USERNAME.';
+
       const workspaceMembers = await fetchWorkspaceMembers(workspaceId);
-      set({ workspaceMembers, message: 'Тренер приглашен.' });
+      set({
+        workspaceMembers,
+        coachInviteLink: inviteLink,
+        message: helperMessage,
+      });
+
+      return inviteLink;
     } catch (innerError) {
       const message = formatError(innerError);
       set({ error: message });

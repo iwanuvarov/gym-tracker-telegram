@@ -26,6 +26,7 @@ cp .env.example .env
 ```env
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
+VITE_TELEGRAM_BOT_USERNAME=your_bot_username_without_@
 ```
 4. Запуск:
 ```bash
@@ -58,6 +59,11 @@ supabase secrets set TELEGRAM_BOT_TOKEN=... TELEGRAM_AUTH_PASSWORD_SECRET=...
 - создает/находит пользователя Supabase Auth,
 - привязывает `telegram_user_id` в `telegram_identities`,
 - возвращает `access/refresh` токены, которые фронт сохраняет как обычную сессию Supabase.
+
+Приглашение тренера через Telegram:
+- owner генерирует ссылку deep-link прямо в UI,
+- ссылка ведет в Mini App с `startapp=invite_<token>`,
+- после входа токен принимается через RPC `accept_workspace_invite`, и тренер добавляется в пространство.
 
 ## Связь с мобильным проектом
 - Можно использовать тот же Supabase проект, те же таблицы и RLS-политики.
